@@ -1,6 +1,21 @@
 pub fn main() !void {
     const gpa = std.heap.smp_allocator;
 
+    var root_directory: []const u8 = ".";
+
+    var ignored_files: std.StringArrayHashMapUnmanaged(void) = .{};
+    try ignored_files.put(gpa, ".git", {});
+
+    {
+        var cli_args = std.process.args();
+
+        _ = cli_args.next();
+
+        while (cli_args.next()) |arg| {
+            root_directory = arg;
+        }
+    }
+
     var arena_instance = std.heap.ArenaAllocator.init(gpa);
     defer arena_instance.deinit();
 
@@ -11,7 +26,31 @@ pub fn main() !void {
     const io = threaded_io.io();
 
     const cwd = std.fs.cwd();
-    var cwd_iterable = try cwd.openDir(".", .{
+
+    blk: {
+        const gitignore_file = cwd.openFile(".gitignore", .{}) catch |e| {
+            switch (e) {
+                error.FileNotFound => break :blk,
+                else => return e,
+            }
+        };
+        defer gitignore_file.close();
+
+        const gitignore_stat = try gitignore_file.stat();
+
+        const gitignore_data = try gpa.alloc(u8, gitignore_stat.size);
+        defer gpa.free(gitignore_data);
+
+        _ = try gitignore_file.read(gitignore_data);
+
+        var token_iter = std.mem.tokenizeScalar(u8, gitignore_data, '\n');
+
+        while (token_iter.next()) |ignore_entry| {
+            try ignored_files.put(gpa, try gpa.dupe(u8, std.fs.path.basename(ignore_entry)), {});
+        }
+    }
+
+    var cwd_iterable = try cwd.openDir(root_directory, .{
         .iterate = true,
     });
     defer cwd_iterable.close();
@@ -26,6 +65,7 @@ pub fn main() !void {
         io,
         &result_group,
         cwd_iterable,
+        &ignored_files,
         &results,
     );
 
@@ -42,26 +82,19 @@ fn walkDirectoryIter(
     io: std.Io,
     group: *std.Io.Group,
     dir: std.fs.Dir,
+    ignored_files: *std.StringArrayHashMapUnmanaged(void),
     ///Map from file extensions to line counts
     results: *std.StringArrayHashMapUnmanaged(*align(64) u64),
 ) !void {
     var iter = dir.iterate();
 
     while (try iter.next()) |entry| {
+        if (ignored_files.get(entry.name)) |_| {
+            continue;
+        }
+
         switch (entry.kind) {
             .directory => {
-                if (std.mem.eql(u8, entry.name, ".git")) {
-                    continue;
-                }
-
-                if (std.mem.eql(u8, entry.name, ".zig-cache")) {
-                    continue;
-                }
-
-                if (std.mem.eql(u8, entry.name, "zig-out")) {
-                    continue;
-                }
-
                 const sub_dir_iter = try dir.openDir(entry.name, .{ .iterate = true });
                 // defer sub_dir_iter.close();
 
@@ -71,6 +104,7 @@ fn walkDirectoryIter(
                     io,
                     group,
                     sub_dir_iter,
+                    ignored_files,
                     results,
                 );
             },
