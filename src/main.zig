@@ -16,6 +16,13 @@ pub fn main() !void {
         }
     }
 
+    var stdout_file = std.fs.File.stdout();
+
+    var stdout_buffer: [1024 * 4]u8 = undefined;
+
+    var stdout_writer = stdout_file.writer(&stdout_buffer);
+    var stdout = &stdout_writer.interface;
+
     var arena_instance = std.heap.ArenaAllocator.init(gpa);
     defer arena_instance.deinit();
 
@@ -71,9 +78,35 @@ pub fn main() !void {
 
     result_group.wait(io);
 
-    for (results.keys(), results.values()) |extension, line_count| {
-        std.log.info("extension: {s}, lines: {}", .{ extension, line_count.* });
+    const LineCountResult = struct {
+        lines: u64,
+        index: usize,
+
+        pub fn lessThan(_: void, lhs: @This(), rhs: @This()) bool {
+            return lhs.lines > rhs.lines;
+        }
+    };
+
+    var result_buffer = try gpa.alloc(LineCountResult, results.count());
+    defer gpa.free(result_buffer);
+
+    for (results.keys(), results.values(), 0..) |extension, line_count, i| {
+        _ = extension; // autofix
+        result_buffer[i] = .{ .index = i, .lines = line_count.* };
     }
+
+    std.sort.insertion(
+        LineCountResult,
+        result_buffer,
+        {},
+        LineCountResult.lessThan,
+    );
+
+    for (result_buffer) |result| {
+        try stdout.print("  extension: {s}, lines: {}\n", .{ results.keys()[result.index], result.lines });
+    }
+
+    try stdout.flush();
 }
 
 fn walkDirectoryIter(
@@ -124,7 +157,6 @@ fn walkDirectoryIter(
                 group.async(io, processFile, .{
                     io,
                     dir,
-                    gpa,
                     try arena.dupe(u8, entry.name),
                     counter_query.value_ptr.*,
                 });
@@ -137,11 +169,9 @@ fn walkDirectoryIter(
 fn processFile(
     io: std.Io,
     dir: std.fs.Dir,
-    gpa: std.mem.Allocator,
     file_name: []const u8,
     result_count: *align(64) u64,
 ) void {
-    _ = gpa; // autofix
     const file = dir.adaptToNewApi().openFile(
         io,
         file_name,
