@@ -6,13 +6,21 @@ pub fn main() !void {
     var ignored_files: std.StringArrayHashMapUnmanaged(void) = .{};
     try ignored_files.put(gpa, ".git", {});
 
+    var extension_whitelist: std.StringArrayHashMapUnmanaged(void) = .{};
+
     {
         var cli_args = std.process.args();
 
         _ = cli_args.next();
 
         while (cli_args.next()) |arg| {
-            root_directory = arg;
+            if (std.mem.eql(u8, arg, "-e")) {
+                const ext = cli_args.next().?;
+
+                try extension_whitelist.put(gpa, ext, {});
+            } else {
+                root_directory = arg;
+            }
         }
     }
 
@@ -73,6 +81,7 @@ pub fn main() !void {
         &result_group,
         cwd_iterable,
         &ignored_files,
+        &extension_whitelist,
         &results,
     );
 
@@ -115,7 +124,8 @@ fn walkDirectoryIter(
     io: std.Io,
     group: *std.Io.Group,
     dir: std.fs.Dir,
-    ignored_files: *std.StringArrayHashMapUnmanaged(void),
+    ignored_files: *const std.StringArrayHashMapUnmanaged(void),
+    extension_whitelist: *const std.StringArrayHashMapUnmanaged(void),
     ///Map from file extensions to line counts
     results: *std.StringArrayHashMapUnmanaged(*align(64) u64),
 ) !void {
@@ -123,6 +133,11 @@ fn walkDirectoryIter(
 
     while (try iter.next()) |entry| {
         if (ignored_files.get(entry.name)) |_| {
+            continue;
+        }
+
+        //TODO: add option to include dot files
+        if (std.mem.startsWith(u8, entry.name, ".")) {
             continue;
         }
 
@@ -138,11 +153,18 @@ fn walkDirectoryIter(
                     group,
                     sub_dir_iter,
                     ignored_files,
+                    extension_whitelist,
                     results,
                 );
             },
             .file => {
                 const file_extension = std.fs.path.extension(entry.name);
+
+                if (extension_whitelist.count() != 0) {
+                    if (extension_whitelist.get(file_extension) == null) {
+                        continue;
+                    }
+                }
 
                 const counter_query = try results.getOrPut(gpa, try arena.dupe(u8, file_extension));
 
