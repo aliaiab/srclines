@@ -2,6 +2,7 @@ pub fn main() !void {
     const gpa = std.heap.smp_allocator;
 
     var root_directory: []const u8 = ".";
+    var list_mode: bool = false;
 
     var ignored_files: std.StringArrayHashMapUnmanaged(void) = .{};
     try ignored_files.put(gpa, ".git", {});
@@ -18,6 +19,8 @@ pub fn main() !void {
                 const ext = cli_args.next().?;
 
                 try extension_whitelist.put(gpa, ext, {});
+            } else if (std.mem.eql(u8, arg, "-l")) {
+                list_mode = true;
             } else {
                 root_directory = arg;
             }
@@ -83,6 +86,7 @@ pub fn main() !void {
         .ignored_files = &ignored_files,
         .extension_whitelist = &extension_whitelist,
         .results = &results,
+        .file_results = .{},
     };
 
     if (root_file_stat.kind != .directory) {
@@ -113,6 +117,22 @@ pub fn main() !void {
         }
     };
 
+    if (list_mode) {
+        std.sort.insertion(
+            Context.FileResult,
+            context.file_results.items,
+            {},
+            Context.FileResult.lessThan,
+        );
+
+        for (context.file_results.items) |entry| {
+            try stdout.print("  {}: {s}\n", .{
+                entry.count,
+                entry.file_path,
+            });
+        }
+    }
+
     var result_buffer = try gpa.alloc(LineCountResult, results.count());
     defer gpa.free(result_buffer);
 
@@ -128,8 +148,21 @@ pub fn main() !void {
         LineCountResult.lessThan,
     );
 
+    if (list_mode)
+        try stdout.print("\nTotal:\n", .{});
+    var temp_buf: [1024]u8 = undefined;
+
+    const largest_number_string = try std.fmt.bufPrint(&temp_buf, "{}", .{result_buffer[0].lines});
+
     for (result_buffer) |result| {
-        try stdout.print("  extension: {s}, lines: {}\n", .{ results.keys()[result.index], result.lines });
+        const number_string = try std.fmt.bufPrint(&temp_buf, "{}", .{result.lines});
+
+        const number_padding = largest_number_string.len - number_string.len;
+        try stdout.print("  {}", .{result.lines});
+        _ = try stdout.splatByte(' ', number_padding);
+        try stdout.print(": {s}\n", .{
+            results.keys()[result.index],
+        });
     }
 
     try stdout.flush();
@@ -144,6 +177,17 @@ const Context = struct {
     extension_whitelist: *const std.StringArrayHashMapUnmanaged(void),
     ///Map from file extensions to line counts
     results: *std.StringArrayHashMapUnmanaged(*align(64) u64),
+    file_results: std.ArrayList(FileResult),
+    file_result_mutex: std.Thread.Mutex = .{},
+
+    pub const FileResult = struct {
+        file_path: []const u8,
+        count: u64,
+
+        pub fn lessThan(_: void, lhs: @This(), rhs: @This()) bool {
+            return lhs.count < rhs.count;
+        }
+    };
 };
 
 fn walkDirectoryIter(
@@ -187,6 +231,10 @@ fn kickoffProcessFile(
 ) !void {
     const file_extension = std.fs.path.extension(file_name);
 
+    if (file_extension.len == 0) {
+        return;
+    }
+
     if (context.extension_whitelist.count() != 0) {
         if (context.extension_whitelist.get(file_extension) == null) {
             return;
@@ -204,7 +252,7 @@ fn kickoffProcessFile(
     }
 
     context.group.async(context.io, processFile, .{
-        context.io,
+        context,
         dir,
         try context.arena.dupe(u8, file_name),
         counter_query.value_ptr.*,
@@ -212,11 +260,12 @@ fn kickoffProcessFile(
 }
 
 fn processFile(
-    io: std.Io,
+    context: *Context,
     dir: std.fs.Dir,
     file_name: []const u8,
     result_count: *align(64) u64,
 ) void {
+    const io = context.io;
     const file = dir.adaptToNewApi().openFile(
         io,
         file_name,
@@ -258,6 +307,14 @@ fn processFile(
     }
 
     _ = @atomicRmw(u64, result_count, .Add, line_count, .acq_rel);
+
+    context.file_result_mutex.lock();
+    defer context.file_result_mutex.unlock();
+
+    context.file_results.append(context.gpa, .{
+        .file_path = file_name,
+        .count = line_count,
+    }) catch unreachable;
 }
 
 const std = @import("std");
