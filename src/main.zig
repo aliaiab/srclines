@@ -65,25 +65,42 @@ pub fn main() !void {
         }
     }
 
-    var cwd_iterable = try cwd.openDir(root_directory, .{
-        .iterate = true,
-    });
-    defer cwd_iterable.close();
+    const root_file = try cwd.openFile(root_directory, .{});
+
+    const root_file_stat = try root_file.stat();
+
+    root_file.close();
 
     var results: std.StringArrayHashMapUnmanaged(*align(64) u64) = .{};
 
     var result_group: std.Io.Group = .init;
 
-    try walkDirectoryIter(
-        gpa,
-        arena,
-        io,
-        &result_group,
-        cwd_iterable,
-        &ignored_files,
-        &extension_whitelist,
-        &results,
-    );
+    var context: Context = .{
+        .io = io,
+        .group = &result_group,
+        .gpa = gpa,
+        .arena = arena,
+        .ignored_files = &ignored_files,
+        .extension_whitelist = &extension_whitelist,
+        .results = &results,
+    };
+
+    if (root_file_stat.kind != .directory) {
+        try kickoffProcessFile(
+            &context,
+            cwd,
+            root_directory,
+        );
+    } else {
+        const cwd_iterable = try cwd.openDir(root_directory, .{
+            .iterate = true,
+        });
+
+        try walkDirectoryIter(
+            &context,
+            cwd_iterable,
+        );
+    }
 
     result_group.wait(io);
 
@@ -118,21 +135,25 @@ pub fn main() !void {
     try stdout.flush();
 }
 
-fn walkDirectoryIter(
+const Context = struct {
     gpa: std.mem.Allocator,
     arena: std.mem.Allocator,
     io: std.Io,
     group: *std.Io.Group,
-    dir: std.fs.Dir,
     ignored_files: *const std.StringArrayHashMapUnmanaged(void),
     extension_whitelist: *const std.StringArrayHashMapUnmanaged(void),
     ///Map from file extensions to line counts
     results: *std.StringArrayHashMapUnmanaged(*align(64) u64),
+};
+
+fn walkDirectoryIter(
+    context: *Context,
+    dir: std.fs.Dir,
 ) !void {
     var iter = dir.iterate();
 
     while (try iter.next()) |entry| {
-        if (ignored_files.get(entry.name)) |_| {
+        if (context.ignored_files.get(entry.name)) |_| {
             continue;
         }
 
@@ -147,45 +168,47 @@ fn walkDirectoryIter(
                 // defer sub_dir_iter.close();
 
                 try walkDirectoryIter(
-                    gpa,
-                    arena,
-                    io,
-                    group,
+                    context,
                     sub_dir_iter,
-                    ignored_files,
-                    extension_whitelist,
-                    results,
                 );
             },
             .file => {
-                const file_extension = std.fs.path.extension(entry.name);
-
-                if (extension_whitelist.count() != 0) {
-                    if (extension_whitelist.get(file_extension) == null) {
-                        continue;
-                    }
-                }
-
-                const counter_query = try results.getOrPut(gpa, try arena.dupe(u8, file_extension));
-
-                if (!counter_query.found_existing) {
-                    const counter = try arena.alignedAlloc(u64, .@"64", 1);
-
-                    counter[0] = 0;
-
-                    counter_query.value_ptr.* = @ptrCast(counter.ptr);
-                }
-
-                group.async(io, processFile, .{
-                    io,
-                    dir,
-                    try arena.dupe(u8, entry.name),
-                    counter_query.value_ptr.*,
-                });
+                try kickoffProcessFile(context, dir, entry.name);
             },
             else => {},
         }
     }
+}
+
+fn kickoffProcessFile(
+    context: *Context,
+    dir: std.fs.Dir,
+    file_name: []const u8,
+) !void {
+    const file_extension = std.fs.path.extension(file_name);
+
+    if (context.extension_whitelist.count() != 0) {
+        if (context.extension_whitelist.get(file_extension) == null) {
+            return;
+        }
+    }
+
+    const counter_query = try context.results.getOrPut(context.gpa, try context.arena.dupe(u8, file_extension));
+
+    if (!counter_query.found_existing) {
+        const counter = try context.arena.alignedAlloc(u64, .@"64", 1);
+
+        counter[0] = 0;
+
+        counter_query.value_ptr.* = @ptrCast(counter.ptr);
+    }
+
+    context.group.async(context.io, processFile, .{
+        context.io,
+        dir,
+        try context.arena.dupe(u8, file_name),
+        counter_query.value_ptr.*,
+    });
 }
 
 fn processFile(
