@@ -125,9 +125,19 @@ pub fn main() !void {
             Context.FileResult.lessThan,
         );
 
+        var temp_buf: [1024]u8 = undefined;
+
+        const largest_number_string = try std.fmt.bufPrint(&temp_buf, "{}", .{
+            context.file_results.items[context.file_results.items.len - 1].count,
+        });
+
         for (context.file_results.items) |entry| {
-            try stdout.print("  {}: {s}\n", .{
-                entry.count,
+            const number_string = try std.fmt.bufPrint(&temp_buf, "{}", .{entry.count});
+
+            const number_padding = largest_number_string.len - number_string.len;
+            try stdout.print("  {}", .{entry.count});
+            _ = try stdout.splatByte(' ', number_padding);
+            try stdout.print(": {s}\n", .{
                 entry.file_path,
             });
         }
@@ -155,6 +165,8 @@ pub fn main() !void {
     const largest_number_string = try std.fmt.bufPrint(&temp_buf, "{}", .{result_buffer[0].lines});
 
     for (result_buffer) |result| {
+        if (result.lines == 0) continue;
+
         const number_string = try std.fmt.bufPrint(&temp_buf, "{}", .{result.lines});
 
         const number_padding = largest_number_string.len - number_string.len;
@@ -287,6 +299,7 @@ fn processFile(
     const vec_count = file_data.len / vec_len;
 
     var char_index: usize = 0;
+    var is_ascii: bool = true;
 
     for (0..vec_count) |vec_index| {
         const vec_ptr: *@Vector(vec_len, u8) = @ptrCast(@alignCast(file_data.ptr + vec_index * vec_len));
@@ -294,15 +307,39 @@ fn processFile(
         const vec_new_line: @Vector(vec_len, u8) = @splat('\n');
 
         const vec_cmp = vec == vec_new_line;
+        const ascii_max: @Vector(vec_len, u8) = @splat(127);
 
         line_count += std.simd.countTrues(vec_cmp);
 
+        is_ascii = is_ascii and std.simd.countTrues(vec < ascii_max) == vec_len;
         char_index += vec_len;
     }
 
     for (file_data[char_index..]) |char| {
         if (char == '\n') {
             line_count += 1;
+        }
+        is_ascii = is_ascii and char < 127;
+    }
+
+    if (!is_ascii) return;
+
+    {
+        var is_blank: bool = true;
+        for (file_data) |char| {
+            switch (char) {
+                '\n' => {
+                    if (is_blank) {
+                        line_count -= 1;
+                    }
+
+                    is_blank = true;
+                },
+                ' ', '\t', '\r' => {},
+                else => {
+                    is_blank = false;
+                },
+            }
         }
     }
 
