@@ -134,6 +134,8 @@ pub fn main() !void {
         }
     };
 
+    var largest_number_char_length: usize = 0;
+
     if (list_mode) {
         std.sort.insertion(
             Context.FileResult,
@@ -150,6 +152,17 @@ pub fn main() !void {
             context.file_results.items[context.file_results.items.len - 1].count,
             .{ .approximate = approx_count_printing },
         );
+        _ = largest_number_string; // autofix
+
+        for (context.file_results.items) |result| {
+            const count_string = try bufPrintCount(
+                &temp_buf,
+                "{}",
+                result.count,
+                .{ .approximate = approx_count_printing },
+            );
+            largest_number_char_length = @max(largest_number_char_length, count_string.len);
+        }
 
         for (context.file_results.items) |entry| {
             const number_string = try bufPrintCount(
@@ -159,7 +172,7 @@ pub fn main() !void {
                 .{ .approximate = approx_count_printing },
             );
 
-            const number_padding = largest_number_string.len - number_string.len;
+            const number_padding = largest_number_char_length - number_string.len;
             _ = try stdout.splatByte(' ', number_padding);
             try printCount(stdout, "  {}", entry.count, .{
                 .approximate = approx_count_printing,
@@ -189,12 +202,15 @@ pub fn main() !void {
         try stdout.print("\nTotal:\n", .{});
     var temp_buf: [1024]u8 = undefined;
 
-    const largest_number_string = try bufPrintCount(
-        &temp_buf,
-        "{}",
-        result_buffer[0].lines,
-        .{ .approximate = approx_count_printing },
-    );
+    for (result_buffer) |result| {
+        const count_string = try bufPrintCount(
+            &temp_buf,
+            "{}",
+            result.lines,
+            .{ .approximate = approx_count_printing },
+        );
+        largest_number_char_length = @max(largest_number_char_length, count_string.len);
+    }
 
     for (result_buffer) |result| {
         if (result.lines == 0) continue;
@@ -207,7 +223,7 @@ pub fn main() !void {
             .{ .approximate = approx_count_printing },
         );
 
-        const number_padding = largest_number_string.len - number_string.len;
+        const number_padding = largest_number_char_length - number_string.len;
         _ = try stdout.splatByte(' ', number_padding);
         try printCount(
             stdout,
@@ -265,7 +281,7 @@ fn printCount(
 
     try writer.print(fmt, .{actual_count});
     if (marker != 0) {
-        try writer.print("{}", .{marker});
+        try writer.print("{c}", .{marker});
     }
 }
 
