@@ -146,14 +146,6 @@ pub fn main() !void {
 
         var temp_buf: [1024]u8 = undefined;
 
-        const largest_number_string = try bufPrintCount(
-            &temp_buf,
-            "{}",
-            context.file_results.items[context.file_results.items.len - 1].count,
-            .{ .approximate = approx_count_printing },
-        );
-        _ = largest_number_string; // autofix
-
         for (context.file_results.items) |result| {
             const count_string = try bufPrintCount(
                 &temp_buf,
@@ -440,6 +432,10 @@ fn processFile(
 
         if (!is_ascii) {
             @branchHint(.cold);
+
+            if (!std.unicode.utf8ValidateSlice(file_data)) {
+                return;
+            }
         }
     }
 
@@ -448,6 +444,14 @@ fn processFile(
             line_count += 1;
         }
         is_ascii = is_ascii and char < 127;
+
+        if (!is_ascii) {
+            @branchHint(.cold);
+
+            if (!std.unicode.utf8ValidateSlice(file_data)) {
+                return;
+            }
+        }
     }
 
     if (!is_ascii) {}
